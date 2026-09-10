@@ -47,9 +47,10 @@ jobs:
           p.write_text(s.replace(needle, repl))
           PY
 
-      - name: Install Rust ARM64 musl target
+      - name: Install Codex-pinned Rust ARM64 musl target
         uses: dtolnay/rust-toolchain@stable
         with:
+          toolchain: '1.95.0'
           targets: aarch64-unknown-linux-musl
 
       - name: Install Zig
@@ -62,6 +63,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          rustup target list --toolchain 1.95.0 --installed | grep -Fx "$TARGET"
           TARGET="$TARGET" bash "$GITHUB_WORKSPACE/codex-src/.github/scripts/install-musl-build-tools.sh"
 
       - name: Build canonical ARM64 musl package
@@ -122,8 +124,11 @@ jobs:
           exec "$DEST/bin/codex" "\$@"
           LAUNCH
           chmod +x "$BIN/codex-nv"
+          if ! grep -Fq '$HOME/.local/bin' "$HOME/.bashrc" 2>/dev/null; then
+            printf '\nexport PATH="$HOME/.local/bin:$PATH"\n' >> "$HOME/.bashrc"
+          fi
           echo "Installed: $BIN/codex-nv"
-          echo 'Ensure $HOME/.local/bin is in PATH, then run: codex-nv'
+          echo "Run: source ~/.bashrc && codex-nv"
           EOF
           chmod +x out/Codex-NV/install-termux.sh
 
