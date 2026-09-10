@@ -1,0 +1,134 @@
+name: tmp-codex-nv-arm64-lite
+
+on:
+  push:
+    branches:
+      - 'tmp/codex-nv-arm64-20260911'
+    paths:
+      - '.github/workflows/tmp-codex-nv-arm64-lite.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  build-lite:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 120
+    env:
+      TARGET: aarch64-unknown-linux-musl
+      RUST_MIN_STACK: '16777216'
+      AWS_LC_SYS_NO_JITTER_ENTROPY: '1'
+      CARGO_NET_GIT_FETCH_WITH_CLI: 'true'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Checkout tri-wire source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --filter=blob:none https://github.com/Xxx91n/codex.git codex-src
+          cd codex-src
+          git checkout f5feccf513a6d5cfe8c12b3df465d0f4f79d0313
+
+      - name: Apply Kimi K3 max defaults
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('codex-src/codex-rs/core/src/client/wire/chat.rs')
+          s = p.read_text()
+          needle = '''        Ok(request)\n    }\n}\n\n/// Converts Responses-shaped conversation items into Chat Completions\n'''
+          repl = '''        if model_info.slug == "moonshotai/kimi-k3"\n            && let Some(obj) = request.as_object_mut()\n        {\n            obj.insert("reasoning_effort".to_string(), serde_json::Value::String("max".to_string()));\n            obj.insert("temperature".to_string(), json!(1.0));\n            obj.insert("max_tokens".to_string(), json!(16_384));\n        }\n\n        Ok(request)\n    }\n}\n\n/// Converts Responses-shaped conversation items into Chat Completions\n'''
+          if s.count(needle) != 1:
+              raise SystemExit(f'patch anchor mismatch: {s.count(needle)}')
+          p.write_text(s.replace(needle, repl))
+          PY
+
+      - name: Install pinned Rust target
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.95.0'
+          targets: aarch64-unknown-linux-musl
+
+      - name: Install Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.14.0
+          use-cache: false
+
+      - name: Configure musl linker
+        shell: bash
+        run: |
+          set -euo pipefail
+          TARGET="$TARGET" bash "$GITHUB_WORKSPACE/codex-src/.github/scripts/install-musl-build-tools.sh"
+
+      - name: Build only Codex CLI
+        shell: bash
+        working-directory: codex-src/codex-rs
+        run: |
+          set -euo pipefail
+          cargo build --locked --release --target "$TARGET" -p codex-cli --bin codex
+
+      - name: Make Termux bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p out/Codex-NV/bin
+          cp "codex-src/codex-rs/target/$TARGET/release/codex" out/Codex-NV/bin/codex
+          chmod +x out/Codex-NV/bin/codex
+          cat > out/Codex-NV/config.toml <<'EOF'
+          model = "moonshotai/kimi-k3"
+          model_provider = "nvidia"
+          model_reasoning_effort = "max"
+          sandbox_mode = "danger-full-access"
+          approval_policy = "on-request"
+
+          [model_providers.nvidia]
+          name = "NVIDIA NIM - Kimi K3"
+          base_url = "https://integrate.api.nvidia.com/v1"
+          wire_api = "chat"
+          env_key = "NV_C1"
+          request_max_retries = 4
+          stream_max_retries = 5
+          stream_idle_timeout_ms = 300000
+          supports_websockets = false
+          requires_openai_auth = false
+          EOF
+          cat > out/Codex-NV/install-termux.sh <<'EOF'
+          #!/data/data/com.termux/files/usr/bin/bash
+          set -euo pipefail
+          SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+          DEST="$HOME/.local/lib/codex-nv"
+          mkdir -p "$DEST" "$HOME/.local/bin" "$HOME/.codex-nvidia"
+          cp -R "$SRC"/* "$DEST"/
+          cp "$SRC/config.toml" "$HOME/.codex-nvidia/config.toml"
+          cat > "$HOME/.local/bin/codex-nv" <<LAUNCH
+          #!/data/data/com.termux/files/usr/bin/bash
+          export CODEX_HOME="$HOME/.codex-nvidia"
+          exec "$DEST/bin/codex" "\$@"
+          LAUNCH
+          chmod +x "$HOME/.local/bin/codex-nv"
+          grep -Fq '$HOME/.local/bin' "$HOME/.bashrc" 2>/dev/null || printf '\nexport PATH="$HOME/.local/bin:$PATH"\n' >> "$HOME/.bashrc"
+          echo 'Installed. Run: source ~/.bashrc && codex-nv'
+          EOF
+          chmod +x out/Codex-NV/install-termux.sh
+          tar -C out -czf out/codex-nv-s23-ultra-arm64-lite.tar.gz Codex-NV
+          sha256sum out/codex-nv-s23-ultra-arm64-lite.tar.gz > out/SHA256SUMS.txt
+
+      - name: Native ARM64 smoke test
+        shell: bash
+        run: |
+          set -euo pipefail
+          file out/Codex-NV/bin/codex
+          out/Codex-NV/bin/codex --version
+          ldd out/Codex-NV/bin/codex || true
+          test "$(uname -m)" = "aarch64"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: codex-nv-s23-ultra-arm64-lite
+          path: |
+            out/codex-nv-s23-ultra-arm64-lite.tar.gz
+            out/SHA256SUMS.txt
+          retention-days: 1
