@@ -52,6 +52,26 @@ jobs:
       - name: Configure musl linker
         shell: bash
         run: TARGET="$TARGET" bash "$GITHUB_WORKSPACE/codex-src/.github/scripts/install-musl-build-tools.sh"
+      - name: Use Codex-built V8 artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(python3 "$GITHUB_WORKSPACE/codex-src/.github/scripts/rusty_v8_bazel.py" resolved-v8-crate-version)"
+          tag="rusty-v8-v${version}"
+          base="https://github.com/openai/codex/releases/download/${tag}"
+          d="$RUNNER_TEMP/rusty_v8"
+          profile="ptrcomp_sandbox_release"
+          archive="librusty_v8_${profile}_${TARGET}.a.gz"
+          binding="src_binding_${profile}_${TARGET}.rs"
+          checks="rusty_v8_${profile}_${TARGET}.sha256"
+          mkdir -p "$d"
+          curl -fsSL "$base/$archive" -o "$d/$archive"
+          curl -fsSL "$base/$binding" -o "$d/$binding"
+          curl -fsSL "$base/$checks" -o "$d/$checks"
+          test "$(wc -l < "$d/$checks")" -eq 2
+          (cd "$d" && tr -d '\r' < "$checks" | sha256sum -c -)
+          echo "RUSTY_V8_ARCHIVE=$d/$archive" >> "$GITHUB_ENV"
+          echo "RUSTY_V8_SRC_BINDING_PATH=$d/$binding" >> "$GITHUB_ENV"
       - name: Build fast Codex CLI
         shell: bash
         working-directory: codex-src/codex-rs
